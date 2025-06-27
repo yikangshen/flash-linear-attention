@@ -21,6 +21,7 @@ def chunk_gated_delta_rule_fwd(
     v: torch.Tensor,
     g: torch.Tensor,
     beta: torch.Tensor,
+    gamma: torch.Tensor,
     scale: float,
     initial_state: torch.Tensor,
     output_final_state: bool,
@@ -44,6 +45,7 @@ def chunk_gated_delta_rule_fwd(
         k=k,
         v=v,
         beta=beta,
+        gamma=gamma,
         A=A,
         g_cumsum=g,
         cu_seqlens=cu_seqlens,
@@ -161,6 +163,7 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
         v: torch.Tensor,
         g: torch.Tensor,
         beta: torch.Tensor,
+        gamma: torch.Tensor,
         scale: float,
         initial_state: torch.Tensor,
         output_final_state: bool,
@@ -180,12 +183,13 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
             v=v,
             g=g,
             beta=beta,
+            gamma=gamma,
             scale=scale,
             initial_state=initial_state,
             output_final_state=output_final_state,
             cu_seqlens=cu_seqlens,
         )
-        ctx.save_for_backward(q_orig, k_orig, v, g, beta, A, initial_state, cu_seqlens)
+        ctx.save_for_backward(q_orig, k_orig, v, g, beta, gamma, A, initial_state, cu_seqlens)
         ctx.scale = scale
         ctx.use_qk_l2norm_in_kernel = use_qk_l2norm_in_kernel
         return o.to(q.dtype), final_state
@@ -198,27 +202,29 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
         do: torch.Tensor,
         dht: torch.Tensor
     ):
-        q, k, v, g, beta, A, initial_state, cu_seqlens = ctx.saved_tensors
-        if ctx.use_qk_l2norm_in_kernel:
-            q, q_orig = l2norm_fwd(q), q
-            k, k_orig = l2norm_fwd(k), k
-        dq, dk, dv, db, dg, dh0 = chunk_gated_delta_rule_bwd(
-            q=q,
-            k=k,
-            v=v,
-            g=g,
-            beta=beta,
-            A=A,
-            scale=ctx.scale,
-            initial_state=initial_state,
-            do=do,
-            dht=dht,
-            cu_seqlens=cu_seqlens,
-        )
-        if ctx.use_qk_l2norm_in_kernel:
-            dq = l2norm_bwd(q_orig, dq)
-            dk = l2norm_bwd(k_orig, dk)
-        return dq.to(q), dk.to(k), dv.to(v), dg.to(g), db.to(beta), None, dh0, None, None, None
+        raise NotImplementedError("ChunkGatedDeltaRuleFunction.backward is not implemented")
+    
+        # q, k, v, g, beta, A, initial_state, cu_seqlens = ctx.saved_tensors
+        # if ctx.use_qk_l2norm_in_kernel:
+        #     q, q_orig = l2norm_fwd(q), q
+        #     k, k_orig = l2norm_fwd(k), k
+        # dq, dk, dv, db, dg, dh0 = chunk_gated_delta_rule_bwd(
+        #     q=q,
+        #     k=k,
+        #     v=v,
+        #     g=g,
+        #     beta=beta,
+        #     A=A,
+        #     scale=ctx.scale,
+        #     initial_state=initial_state,
+        #     do=do,
+        #     dht=dht,
+        #     cu_seqlens=cu_seqlens,
+        # )
+        # if ctx.use_qk_l2norm_in_kernel:
+        #     dq = l2norm_bwd(q_orig, dq)
+        #     dk = l2norm_bwd(k_orig, dk)
+        # return dq.to(q), dk.to(k), dv.to(v), dg.to(g), db.to(beta), None, dh0, None, None, None
 
 
 @torch.compiler.disable
@@ -228,6 +234,7 @@ def chunk_gated_delta_rule(
     v: torch.Tensor,
     g: torch.Tensor,
     beta: torch.Tensor,
+    gamma: torch.Tensor,
     scale: float = None,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
@@ -247,6 +254,8 @@ def chunk_gated_delta_rule(
             (forget) gating tensor (in log space!) of shape `[B, T, H]`.
         beta (torch.Tensor):
             betas of shape `[B, T, H]`.
+        gamma (torch.Tensor):
+            gammas of shape `[B, T, H]`.
         scale (Optional[float]):
             Scale factor for the RetNet attention scores.
             If not provided, it will default to `1 / sqrt(K)`. Default: `None`.
@@ -301,6 +310,7 @@ def chunk_gated_delta_rule(
     assert q.dtype == k.dtype == v.dtype
     assert q.dtype != torch.float32, "ChunkGatedDeltaRuleFunction does not support float32. Please use bfloat16."
     assert len(beta.shape) == 3, "beta must be of shape [B, T, H] if head_first=False, or [B, H, T] otherwise."
+    assert len(gamma.shape) == 3, "gamma must be of shape [B, T, H] if head_first=False, or [B, H, T] otherwise."
 
     if head_first:
         raise DeprecationWarning(
@@ -333,6 +343,7 @@ def chunk_gated_delta_rule(
         v,
         g,
         beta,
+        gamma,
         scale,
         initial_state,
         output_final_state,

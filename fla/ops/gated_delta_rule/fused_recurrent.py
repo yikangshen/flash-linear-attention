@@ -23,6 +23,7 @@ def fused_recurrent_gated_delta_rule_fwd_kernel(
     v,
     g,
     beta,
+    gamma,
     o,
     h0,
     ht,
@@ -60,8 +61,10 @@ def fused_recurrent_gated_delta_rule_fwd_kernel(
     p_v = v + (bos * HV + i_hv) * V + o_v
     if IS_BETA_HEADWISE:
         p_beta = beta + (bos * HV + i_hv) * V + o_v
+        p_gamma = gamma + (bos * HV + i_hv) * V + o_v
     else:
         p_beta = beta + bos * HV + i_hv
+        p_gamma = gamma + bos * HV + i_hv
     p_g = g + bos * HV + i_hv
     p_o = o + ((i_k * all + bos) * HV + i_hv) * V + o_v
 
@@ -86,13 +89,16 @@ def fused_recurrent_gated_delta_rule_fwd_kernel(
         b_q = b_q * scale
         # [BK, BV]
         b_h *= exp(b_g)
-        # [BV]
-        b_v -= tl.sum(b_h * b_k[:, None], 0)
         if IS_BETA_HEADWISE:
             b_beta = tl.load(p_beta, mask=mask_v, other=0).to(tl.float32)
+            b_gamma = tl.load(p_gamma, mask=mask_v, other=0).to(tl.float32)
         else:
             b_beta = tl.load(p_beta).to(tl.float32)
-        b_v *= b_beta
+            b_gamma = tl.load(p_gamma).to(tl.float32)
+        # [BV]
+        # b_v -= tl.sum(b_h * b_k[:, None], 0)
+        # b_v *= b_beta
+        b_v = b_v * b_gamma - tl.sum(b_h * b_k[:, None], 0) * b_beta
         # [BK, BV]
         b_h += b_k[:, None] * b_v[None, :]
         # [BV]
@@ -117,6 +123,7 @@ def fused_recurrent_gated_delta_rule_fwd(
     v: torch.Tensor,
     g: torch.Tensor,
     beta: torch.Tensor,
+    gamma: torch.Tensor,
     scale: float,
     initial_state: torch.Tensor,
     output_final_state: bool,
@@ -145,6 +152,7 @@ def fused_recurrent_gated_delta_rule_fwd(
         v=v,
         g=g,
         beta=beta,
+        gamma=gamma,
         o=o,
         h0=initial_state,
         ht=final_state,
@@ -178,6 +186,7 @@ class FusedRecurrentFunction(torch.autograd.Function):
         v: torch.Tensor,
         g: torch.Tensor,
         beta: torch.Tensor,
+        gamma: torch.Tensor,
         scale: float,
         initial_state: torch.Tensor,
         output_final_state: bool,
@@ -190,6 +199,7 @@ class FusedRecurrentFunction(torch.autograd.Function):
             v=v,
             g=g,
             beta=beta,
+            gamma=gamma,
             scale=scale,
             initial_state=initial_state,
             output_final_state=output_final_state,
@@ -215,6 +225,7 @@ def fused_recurrent_gated_delta_rule(
     v: torch.Tensor,
     g: torch.Tensor,
     beta: torch.Tensor = None,
+    gamma: torch.Tensor = None,
     scale: float = None,
     initial_state: torch.Tensor = None,
     output_final_state: bool = False,
@@ -299,12 +310,15 @@ def fused_recurrent_gated_delta_rule(
         assert scale > 0, "scale must be positive"
     if beta is None:
         beta = torch.ones_like(q[..., 0])
+    if gamma is None:
+        gamma = beta
     o, final_state = FusedRecurrentFunction.apply(
         q,
         k,
         v,
         g,
         beta,
+        gamma,
         scale,
         initial_state,
         output_final_state,

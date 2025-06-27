@@ -143,6 +143,7 @@ def recompute_w_u_fwd_kernel(
     k,
     v,
     beta,
+    gamma,
     w,
     u,
     A,
@@ -167,9 +168,11 @@ def recompute_w_u_fwd_kernel(
     else:
         bos, eos = i_b * T, i_b * T + T
     p_beta = tl.make_block_ptr(beta + bos*H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
+    p_gamma = tl.make_block_ptr(gamma + bos*H + i_h, (T,), (H,), (i_t * BT,), (BT,), (0,))
     p_g = tl.make_block_ptr(g + (bos*H + i_h), (T,), (H,), (i_t * BT,), (BT,), (0,))
     p_A = tl.make_block_ptr(A + (bos*H + i_h) * BT, (T, BT), (H*BT, 1), (i_t * BT, 0), (BT, BT), (1, 0))
     b_beta = tl.load(p_beta, boundary_check=(0,))
+    b_gamma = tl.load(p_gamma, boundary_check=(0,))
     b_A = tl.load(p_A, boundary_check=(0, 1))
     b_g = tl.exp(tl.load(p_g, boundary_check=(0,)))
 
@@ -177,8 +180,9 @@ def recompute_w_u_fwd_kernel(
         p_v = tl.make_block_ptr(v + (bos*H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         p_u = tl.make_block_ptr(u + (bos*H + i_h) * V, (T, V), (H*V, 1), (i_t * BT, i_v * BV), (BT, BV), (1, 0))
         b_v = tl.load(p_v, boundary_check=(0, 1))
-        b_vb = (b_v * b_beta[:, None]).to(b_v.dtype)
-        b_u = tl.dot(b_A, b_vb, allow_tf32=False)
+        # b_vb = (b_v * b_beta[:, None]).to(b_v.dtype)
+        b_vg = (b_v * b_gamma[:, None]).to(b_v.dtype)
+        b_u = tl.dot(b_A, b_vg, allow_tf32=False)
         tl.store(p_u, b_u.to(p_u.dtype.element_ty), boundary_check=(0, 1))
 
     for i_k in range(tl.cdiv(K, BK)):
@@ -194,6 +198,7 @@ def recompute_w_u_fwd(
     k: torch.Tensor,
     v: torch.Tensor,
     beta: torch.Tensor,
+    gamma: torch.Tensor,
     g_cumsum: torch.Tensor,
     A: torch.Tensor,
     cu_seqlens: Optional[torch.LongTensor],
@@ -212,6 +217,7 @@ def recompute_w_u_fwd(
         k=k,
         v=v,
         beta=beta,
+        gamma=gamma,
         w=w,
         u=u,
         A=A,
